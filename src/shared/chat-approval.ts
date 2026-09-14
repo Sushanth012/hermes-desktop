@@ -11,6 +11,14 @@ export interface ChatApprovalRequest {
 
 const VALID_CHOICES = new Set<string>(APPROVAL_CHOICES);
 
+/** Only a gateway-issued ID can safely address a pending approval. */
+export function gatewayApprovalRequestId(payload: unknown): string | null {
+  const value = record(payload)?.request_id;
+  return typeof value === "string" && value.trim() && value.length <= 256
+    ? value
+    : null;
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)

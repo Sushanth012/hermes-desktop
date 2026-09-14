@@ -74,12 +74,16 @@ const activeRecoveryTurn: ActiveTurn = {
 
 function Harness({
   api,
+  connectionId,
+  connectionRevision,
   fallbackOnUnavailable = false,
   initialConnectionMode = "local",
   onDashboardUnavailable,
   setUsage = vi.fn() as SetUsageMock,
 }: {
   api: HarnessApi;
+  connectionId?: string;
+  connectionRevision?: number;
   fallbackOnUnavailable?: boolean;
   initialConnectionMode?: "local" | "remote" | "ssh";
   onDashboardUnavailable?: (reason: string) => void;
@@ -101,6 +105,8 @@ function Harness({
   const activeTurnRef = useRef<ActiveTurn | null>({ ...activeBadTurn });
   const transport = useDashboardChatTransport({
     activeTurnRef,
+    connectionId,
+    connectionRevision,
     contextFolder: null,
     connectionMode,
     enabled: true,
@@ -176,13 +182,27 @@ describe("useDashboardChatTransport recovery", () => {
       return {};
     });
     const api: HarnessApi = {};
-    render(<Harness api={api} initialConnectionMode="remote" />);
+    render(
+      <Harness
+        api={api}
+        connectionId="connection-two"
+        initialConnectionMode="remote"
+      />,
+    );
 
     await act(async () => {
       await api.send?.("hello");
     });
 
     expect(window.hermesAPI.freshDashboardWsUrl).toHaveBeenCalledTimes(1);
+    expect(window.hermesAPI.startDashboard).toHaveBeenCalledWith(
+      undefined,
+      "connection-two",
+    );
+    expect(window.hermesAPI.freshDashboardWsUrl).toHaveBeenCalledWith(
+      undefined,
+      "connection-two",
+    );
     expect(dashboardMock.connect).toHaveBeenCalledWith("ws://fresh-dashboard");
   });
 
@@ -465,6 +485,8 @@ describe("useDashboardChatTransport approvals", () => {
       if (method === "session.create") {
         return { session_id: "live-1", stored_session_id: "stored-1" };
       }
+      if (method === "model.options")
+        return { provider: "bad-provider", model: "bad-model" };
       if (method === "approval.respond") return { resolved: 1 };
       return {};
     });
@@ -507,6 +529,7 @@ describe("useDashboardChatTransport approvals", () => {
     );
     expect(dashboardMock.request).toHaveBeenCalledWith("approval.respond", {
       session_id: "live-1",
+      request_id: "approval-1",
       choice: "once",
       all: false,
     });
@@ -537,7 +560,62 @@ describe("useDashboardChatTransport approvals", () => {
     );
   });
 
-  it("keeps an unresolved response pending for retry", async () => {
+  // @lat: [[chat-commands#Structured command approvals#Stale approval isolation]]
+  it.each(["expired", "lost acknowledgement"])(
+    "never applies a %s approval to the next queued command",
+    async (failure) => {
+      const api: HarnessApi = {};
+      const serverPending = new Set(["first", "second"]);
+      const approved: string[] = [];
+      let loseAck = failure === "lost acknowledgement";
+      render(<Harness api={api} />);
+      await act(async () => {
+        await api.send?.("hello");
+        for (const request_id of serverPending) {
+          dashboardMock.onEvent?.({
+            type: "approval.request",
+            session_id: "live-1",
+            payload: { request_id, choices: ["once"] },
+          });
+        }
+      });
+      if (failure === "expired") serverPending.delete("first");
+      dashboardMock.request.mockImplementation(
+        async (method: string, params: Record<string, unknown>) => {
+          if (method !== "approval.respond") return {};
+          // Match the upstream resolver: omitting request_id consumes the FIFO head.
+          const target = String(
+            params.request_id ?? serverPending.values().next().value,
+          );
+          if (!serverPending.delete(target)) return { resolved: 0 };
+          approved.push(target);
+          if (loseAck) {
+            loseAck = false;
+            throw new Error("acknowledgement lost");
+          }
+          return { resolved: 1 };
+        },
+      );
+      await act(async () => {
+        expect(await api.respondApproval?.("first", "once")).toBe(false);
+        if (failure === "lost acknowledgement")
+          expect(await api.respondApproval?.("first", "once")).toBe(false);
+      });
+      expect(serverPending.has("second")).toBe(true);
+      expect(approved).not.toContain("second");
+      expect(dashboardMock.request).toHaveBeenCalledWith("session.interrupt", {
+        session_id: "live-1",
+      });
+      expect(await api.respondApproval?.("second", "once")).toBe(false);
+      expect(
+        api.messages
+          ?.filter((msg) => msg.kind === "approval")
+          .every((msg) => msg.kind === "approval" && msg.unavailable),
+      ).toBe(true);
+    },
+  );
+
+  it("stops an approval that has no gateway-issued request ID", async () => {
     const api: HarnessApi = {};
     render(<Harness api={api} />);
     await act(async () => {
@@ -545,18 +623,51 @@ describe("useDashboardChatTransport approvals", () => {
       dashboardMock.onEvent?.({
         type: "approval.request",
         session_id: "live-1",
-        payload: { request_id: "approval-unresolved", choices: ["deny"] },
+        payload: { id: "display-only", command: "npm publish" },
       });
     });
-    dashboardMock.request.mockResolvedValueOnce({ resolved: 0 });
+    expect(await api.respondApproval?.("display-only", "once")).toBe(false);
+    expect(dashboardMock.request).toHaveBeenCalledWith("session.interrupt", {
+      session_id: "live-1",
+    });
+    expect(
+      dashboardMock.request.mock.calls.some(
+        ([method]) => method === "approval.respond",
+      ),
+    ).toBe(false);
+  });
 
-    await expect(
-      api.respondApproval?.("approval-unresolved", "deny"),
-    ).resolves.toBe(false);
-    dashboardMock.request.mockResolvedValueOnce({ resolved: 1 });
-    await expect(
-      api.respondApproval?.("approval-unresolved", "deny"),
-    ).resolves.toBe(true);
+  it("does not recover and replay after an approval precedes a missing-session error", async () => {
+    const api: HarnessApi = {};
+    render(<Harness api={api} />);
+    dashboardMock.request.mockImplementation(async (method: string) => {
+      if (method === "session.create")
+        return { session_id: "live-1", stored_session_id: "stored-1" };
+      if (method === "model.options")
+        return { provider: "bad-provider", model: "bad-model" };
+      if (method === "prompt.submit") {
+        dashboardMock.onEvent?.({
+          type: "approval.request",
+          session_id: "live-1",
+          payload: { request_id: "before-ack", choices: ["once"] },
+        });
+        throw new Error("session not found");
+      }
+      return {};
+    });
+    await act(async () => {
+      await api.send?.("hello");
+    });
+    expect(
+      dashboardMock.request.mock.calls.filter(
+        ([method]) => method === "prompt.submit",
+      ),
+    ).toHaveLength(1);
+    expect(
+      dashboardMock.request.mock.calls.some(
+        ([method]) => method === "session.resume",
+      ),
+    ).toBe(false);
   });
 
   it("clears pending approval on completion and abort", async () => {
@@ -576,6 +687,11 @@ describe("useDashboardChatTransport approvals", () => {
       });
     });
 
+    expect(
+      api.messages?.find(
+        (msg) => msg.kind === "approval" && msg.requestId === "approval-3",
+      ),
+    ).toMatchObject({ unavailable: true });
     await expect(api.respondApproval?.("approval-3", "once")).resolves.toBe(
       false,
     );
@@ -593,7 +709,7 @@ describe("useDashboardChatTransport approvals", () => {
     );
   });
 
-  it("answers queued approvals in gateway FIFO order", async () => {
+  it("presents queued approvals in arrival order", async () => {
     const api: HarnessApi = {};
     render(<Harness api={api} />);
     await act(async () => {
@@ -693,6 +809,39 @@ describe("useDashboardChatTransport unavailable fallback (issue #667)", () => {
     });
     await act(async () => {
       await api.send?.("after change");
+    });
+    expect(startDashboard).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-probes after the selected connection is edited in place", async () => {
+    const startDashboard = mockStartDashboard();
+    const api: HarnessApi = {};
+    const { rerender } = render(
+      <Harness
+        api={api}
+        connectionId="connection-a"
+        connectionRevision={0}
+        initialConnectionMode="ssh"
+        fallbackOnUnavailable
+      />,
+    );
+
+    await act(async () => {
+      await api.send?.("hello");
+    });
+    expect(startDashboard).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <Harness
+        api={api}
+        connectionId="connection-a"
+        connectionRevision={1}
+        initialConnectionMode="ssh"
+        fallbackOnUnavailable
+      />,
+    );
+    await act(async () => {
+      await api.send?.("after edit");
     });
     expect(startDashboard).toHaveBeenCalledTimes(2);
   });

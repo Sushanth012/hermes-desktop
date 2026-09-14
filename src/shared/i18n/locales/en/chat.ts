@@ -59,8 +59,7 @@ export default {
     always: "Always allow",
     deny: "Deny",
     responded: "Responded",
-    unavailable:
-      "Approval is no longer available because the connection closed.",
+    unavailable: "This approval is no longer available.",
     queued: "Resolve the earlier approval request first.",
     confirm:
       "Always allow this command in future sessions? This permission persists until revoked.",

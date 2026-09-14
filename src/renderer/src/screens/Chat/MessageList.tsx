@@ -98,7 +98,8 @@ export const MessageList = memo(function MessageList({
   const lastBubble = [...messages].reverse().find(isBubble);
   const lastMessageIsAgent = !!lastBubble && lastBubble.role === "agent";
   const awaitingApproval = messages.some(
-    (message) => message.kind === "approval" && !message.resolved,
+    (message) =>
+      message.kind === "approval" && !message.resolved && !message.unavailable,
   );
   const activeApprovalId = messages.find(
     (message) =>

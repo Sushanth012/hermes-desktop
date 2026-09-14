@@ -72,6 +72,29 @@ describe("New APIs from v0.8/v0.9 features", () => {
     expect(preloadMethods).toContain("respondApproval");
     expect(typeMethods).toContain("respondApproval");
   });
+  it("has bounded Agent capability APIs", () => {
+    expect(preloadMethods).toContain("getAgentCapabilities");
+    expect(typeMethods).toContain("getAgentCapabilities");
+    expect(preloadMethods).toContain("recordAgentRuntimeInfo");
+    expect(typeMethods).toContain("recordAgentRuntimeInfo");
+    expect(preloadMethods).toContain("recordAgentCommandInventory");
+    expect(typeMethods).toContain("recordAgentCommandInventory");
+  });
+
+  it("has named connection registry APIs", () => {
+    for (const method of [
+      "getConnectionRegistry",
+      "getConnectionStatuses",
+      "createConnection",
+      "renameConnection",
+      "selectConnection",
+      "removeConnection",
+    ]) {
+      expect(preloadMethods).toContain(method);
+      expect(typeMethods).toContain(method);
+    }
+  });
+
   it("has backup/import APIs", () => {
     expect(preloadMethods).toContain("runHermesBackup");
     expect(preloadMethods).toContain("runHermesImport");

@@ -90,6 +90,27 @@ describe("mergeStreamedWithFinal", () => {
     ).toBe("abcdefghijkl\n\na1b2c3d4e5f6g7h8i9j0k1l2");
   });
 
+  it.each([
+    { length: 11, gap: 3 },
+    { length: 12, gap: 29 },
+  ])(
+    "retains a distinct supplementary-plane stream below the guards ($length/$gap)",
+    ({ length, gap }) => {
+      const characters = Array.from({ length }, (_, index) =>
+        String.fromCodePoint(0x20000 + index),
+      );
+      const streamed = characters.join("");
+      const final =
+        characters.slice(0, 6).join("") +
+        "x".repeat(gap) +
+        characters.slice(6).join("") +
+        "!";
+      expect(mergeStreamedWithFinal(streamed, final)).toBe(
+        `${streamed}\n\n${final}`,
+      );
+    },
+  );
+
   it("stitches a re-streamed boundary, dropping the duplicated seam", () => {
     // Tail of streamed repeats the head of final at a word boundary.
     expect(mergeStreamedWithFinal("The answer is 4", "answer is 4.")).toBe(

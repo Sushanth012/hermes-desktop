@@ -22,6 +22,7 @@ import type { HistoryItem, SessionSummary, SearchResult } from "./sessions";
 import type { CachedSession } from "./session-cache";
 import type { Attachment } from "../shared/attachments";
 import { isImageMime, MAX_IMAGE_BYTES } from "../shared/attachments";
+import { normalizeModelEndpointUrl } from "../shared/model-endpoint";
 import type { ToolsetInfo } from "./tools";
 import {
   extractLeadingVisionImageFallback,
@@ -1325,17 +1326,36 @@ export function sshGetHermesHome(_config: SshConfig, profile?: string): string {
 export async function sshGetModelConfig(
   config: SshConfig,
   profile?: string,
-): Promise<{ provider: string; model: string; baseUrl: string }> {
+): Promise<{
+  provider: string;
+  model: string;
+  baseUrl: string;
+  contextLength?: number;
+}> {
   // Use dotted paths so the lookup is scoped to the `model:` block. The
   // previous flat keys `provider` / `default` / `base_url` would each
   // match the first occurrence at any indent — typically picking up
   // `personalities.default` or `auxiliary.vision.provider` and reporting
   // them as the model fields (#240).
+  // Read once: each sshReadFile is a real SSH process, so fetching four
+  // sibling fields independently adds avoidable latency to every model read.
+  const content = await sshReadFile(config, remoteConfigPath(profile));
+  const read = (key: string): string =>
+    (content && locateInYaml(content, key)?.value) || "";
+  const rawContextLength = read("model.context_length").trim();
+  const parsedContextLength = rawContextLength
+    ? Number(rawContextLength)
+    : Number.NaN;
+  const contextLength =
+    Number.isFinite(parsedContextLength) && parsedContextLength > 0
+      ? Math.floor(parsedContextLength)
+      : undefined;
+
   return {
-    provider:
-      (await sshGetConfigValue(config, "model.provider", profile)) || "auto",
-    model: (await sshGetConfigValue(config, "model.default", profile)) || "",
-    baseUrl: (await sshGetConfigValue(config, "model.base_url", profile)) || "",
+    provider: read("model.provider") || "auto",
+    model: read("model.default"),
+    baseUrl: read("model.base_url"),
+    ...(contextLength !== undefined ? { contextLength } : {}),
   };
 }
 
@@ -3320,9 +3340,9 @@ export async function sshListCachedSessions(
   config: SshConfig,
   limit = 50,
   offset = 0,
+  profile?: string,
 ): Promise<CachedSession[]> {
-  void offset;
-  const sessions = await sshListSessions(config, limit, 0);
+  const sessions = await sshListSessions(config, limit, offset, profile);
   return sessions.map((s) => ({
     id: s.id,
     title: s.title || s.id,
@@ -3523,7 +3543,11 @@ export async function sshAddModel(
 ): Promise<SavedModel> {
   const models = await sshListModels(config);
   const existing = models.find(
-    (m) => m.model === model && m.provider === provider,
+    (m) =>
+      m.model === model &&
+      m.provider === provider &&
+      normalizeModelEndpointUrl(m.baseUrl) ===
+        normalizeModelEndpointUrl(baseUrl),
   );
   if (existing) return existing;
   const entry: SavedModel = {

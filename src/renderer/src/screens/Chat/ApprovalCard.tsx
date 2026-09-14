@@ -32,7 +32,13 @@ export const ApprovalCard = memo(function ApprovalCard({
     t(`chat.approval.${choice}`);
 
   const submit = async (choice: ApprovalChoice): Promise<void> => {
-    if (resolved || submitting || !isActive || !choices.includes(choice))
+    if (
+      resolved ||
+      unavailable ||
+      submitting ||
+      !isActive ||
+      !choices.includes(choice)
+    )
       return;
     setSubmitting(true);
     setError(false);

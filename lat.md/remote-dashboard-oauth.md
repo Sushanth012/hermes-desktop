@@ -36,13 +36,13 @@ For non-loopback HTTP gateways, [[src/main/dashboard-websocket-relay.ts#createLo
 
 Remote session history uses the same selected authentication transport as management APIs.
 
-[[src/main/remote-sessions.ts#remoteRequestJson]] routes direct OAuth session lists, search, messages, media, titles, and deletion through the persistent cookie partition. Token and SSH session requests retain the session-token header.
+[[src/main/remote-sessions.ts#remoteRequestJson]] routes direct OAuth session lists, search, messages, media, titles, and deletion through the persistent cookie partition. Token and SSH session requests send `X-Hermes-Session-Token` plus `Authorization: Bearer` for gateway compatibility. When the configured URL contains Basic credentials for a reverse proxy, Node supplies Basic authorization and the dashboard still receives its separate session-token header. The gateway API key and dashboard session token remain distinct credentials; adding a header does not make them interchangeable.
 
 ## Authenticated management request boundary
 
 Direct Remote management features share one main-process request client that selects cookie or token authentication without exposing reusable credentials through IPC.
 
-[[src/main/remote-api.ts#remoteDashboardRequestJson]] resolves `auto` through the public status probe, routes OAuth through the persistent Electron partition, and routes token mode through `X-Hermes-Session-Token`. Unexpected probe failures never guess another transport or fall back to local state.
+[[src/main/remote-api.ts#remoteDashboardRequestJson]] resolves `auto` through the public status probe, routes OAuth through the persistent Electron partition, and routes token mode through the shared session request client with the same Bearer/Basic handling. Unexpected probe failures never guess another transport or fall back to local state.
 
 [[src/main/remote-api.ts#RemoteDashboardApiError]] normalizes HTTP status for feature adapters. A `404` marks only that feature unsupported; OAuth login-required errors retain their original reauthentication signal.
 
@@ -59,6 +59,14 @@ Focused tests protect credential isolation, automatic routing, ticket freshness,
 ### Cookie session boundary
 
 Session recognition accepts only Hermes access or refresh cookie names and keeps cookie-backed requests inside the selected Electron partition.
+
+### Session token compatibility
+
+Session requests succeed against HTTP servers that accept only Bearer authentication or only the dedicated session header, preserving compatibility across gateway versions.
+
+### Reverse proxy authentication
+
+URLs containing proxy credentials retain Basic authorization while the dashboard receives its session token separately, preventing the compatibility header from breaking existing authenticated proxies.
 
 ### OAuth dashboard readiness
 

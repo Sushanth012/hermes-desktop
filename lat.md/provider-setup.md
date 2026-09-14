@@ -151,6 +151,12 @@ This exists because desktop models on `inference.hermesone.org` are saved as bar
 
 A provider's config modal manages the models it serves — the **only** place models are added/edited, since there is no standalone Models screen. The provider→models hierarchy lives in one place instead of a separate flat list.
 
+### Transport-consistent attachment identity
+
+Local, Dashboard, and legacy SSH model-library writes identify an attachment by provider + model id + normalized base URL.
+
+URL schemes and hosts are case-insensitive and trailing path slashes are ignored, while case-sensitive path, query, credential, and fragment components remain distinct. This lets two custom endpoints expose the same model id without collapsing separate routes.
+
 [[src/renderer/src/components/ProviderKeysSection.tsx#ProviderModelsManager]] renders below the key field in the config modal: a key-status line, the model pills, and an add-input. It reads/writes the same `models.json` library the chat picker reads (`listModels`/`addModel`/`removeModel`, and re-syncs on `onModelLibraryChanged`), so added models immediately appear in the chat model picker. Models show as chips with a remove button and a **pencil** that opens a small editor for the model's shared definition (display name + context window — see [[model-context]]); because the definition is keyed by model id, editing it under one provider reflects under every provider serving that id. The add-input autocompletes off live discovery and strips whitespace as typed/pasted (model IDs never contain spaces, so `"hello there"` can't be saved).
 
 The single [[src/renderer/src/hooks/useDiscoveredModels.ts#useDiscoveredModels]] call does double duty: it feeds the add-input's `<datalist>` **and** drives the "Connected · key verified" status line — a `status: "ok"` means the endpoint accepted the key and returned a model list, so the "verified" claim is truthful. `unsupported`/`unknown-host` degrade to a plain "Connected" (key set, list not exposed), `error` to "Couldn't verify key", and an empty key to "Add a key to connect".
@@ -160,6 +166,12 @@ The env key is the only anchor the modal has, so persistence routing is derived 
 DashScope is a native provider rather than a compatible/custom endpoint, but it follows the same inline editing pattern: the endpoint selector writes either `dashscope.aliyuncs.com` or `dashscope-intl.aliyuncs.com` to `base_url`, and the key field writes `DASHSCOPE_API_KEY`.
 
 Ids the agent can't resolve by id are listed in `OPENAI_COMPATIBLE_BASE_URLS` ([[src/renderer/src/constants.ts]]) — openai, perplexity, and every `LOCAL_PRESETS` chip (local servers + remote endpoints like groq, deepseek, atlascloud, mistral, …). This map MUST contain every preset id, or selecting that chip mis-routes; a test in `tests/constants.test.ts` enforces it. Selecting one autofills its base URL and shows the base-URL field; on save it is persisted as `provider: custom` + `base_url`, which the gateway accepts and uses to host-derive the API key (`runtime_provider._host_derived_api_key`, e.g. `api.groq.com` → `GROQ_API_KEY`). `displayProviderFromConfig` reverse-maps a stored `custom` + known base URL back to the brand id so the dropdown re-selects it on load. Native providers (the gateway hardcodes their base URL) clear the field instead.
+
+#### Explicit endpoint ports
+
+An explicit non-default port, including zero, remains part of endpoint identity in desktop and injected Dashboard comparisons. Only the default HTTP and HTTPS ports are omitted.
+
+[[tests/hermes-agent-compat.test.ts]] executes the injected Python normalizer against [[src/shared/model-endpoint.ts#normalizeModelEndpointUrl]] to verify that a port is never discarded merely because its numeric value is falsey.
 
 ## Switching providers rewrites the transport (`api_mode`)
 
